@@ -1,0 +1,282 @@
+// frontend/script.js
+const taskForm = document.getElementById("taskForm");
+let editingTaskId = null; // Track which task is being edited
+let allTasks = []; // Global storage for all tasks to enable filtering
+const API_BASE = "http://a202a2b31c530441e8580f20321c42ca-436c36e1339f7b2f.elb.ap-south-1.amazonaws.com";
+
+
+function generateTaskId() {
+  return 'TASK-' + Date.now().toString().slice(-6); // e.g., TASK-123456
+}
+
+function getCategoryInfo(category) {
+  const map = {
+    "Assignment": { icon: "fa-file-alt", class: "assignment" },
+    "Lab": { icon: "fa-flask", class: "lab" },
+    "Exam": { icon: "fa-pencil-ruler", class: "exam" },
+    "Project": { icon: "fa-laptop-code", class: "project" },
+    "Registration": { icon: "fa-clipboard-check", class: "registration" }
+  };
+  return map[category] || { icon: "fa-tasks", class: "default" };
+}
+
+async function fetchTasks() {
+  const response = await fetch(`${API_BASE}/tasks`, {
+    credentials: 'include'
+  });
+  allTasks = await response.json(); // Store tasks globally
+  displayTasks(allTasks); // Display all tasks initially
+}
+
+function displayTasks(tasks) {
+  const taskList = document.getElementById("taskList");
+  taskList.innerHTML = "<h2>📅 Upcoming Tasks</h2>"; // Clear existing tasks
+
+  if (tasks.length === 0) {
+    taskList.innerHTML += "<p>No tasks found matching your criteria.</p>";
+    return;
+  }
+
+  tasks.forEach((task) => {
+    const categoryInfo = getCategoryInfo(task.category);
+    const due = new Date(task.date);
+    const today = new Date();
+    const daysLeft = Math.ceil((due - today) / (1000 * 60 * 60 * 24));
+
+    const taskBlock = document.createElement("div");
+    taskBlock.className = `task-card ${categoryInfo.class} ${task.isPriority ? "priority" : ""} ${daysLeft < 3 && daysLeft >= 0 ? "soon" : ""} ${daysLeft < 0 ? "overdue" : ""}`;
+
+    taskBlock.innerHTML = `
+      <div class="task-header">
+        <span class="category"><i class="fas ${categoryInfo.icon}"></i> ${task.category}</span>
+        <span class="status">${daysLeft < 0 ? `⚠️ Overdue: ${due.toDateString().slice(4)}` : `⏰ Due: ${due.toDateString().slice(4)}`}</span>
+      </div>
+      <div class="task-meta">
+        ${task.isPriority ? '<span class="priority-badge">⭐ Priority</span>' : ''}
+        ${task.isRecurring ? '<span class="recurring-badge">🔄 Recurring</span>' : ''}
+      </div>
+      <h3>${task.title}</h3>
+      <p>${task.notes || ''}</p>
+      <div class="controls">
+        <button onclick="editTask('${task._id}')">Edit</button>
+        <button onclick="markComplete('${task._id}')">✅ Complete</button>
+        <button onclick="deleteTask('${task._id}')">Delete</button>
+      </div>
+    `;
+
+    taskList.appendChild(taskBlock); // ✅ Append to parent
+  });
+}
+
+
+
+
+taskForm.addEventListener("submit", submitTaskForm);
+
+function loadTaskIntoForm(task) {
+  document.getElementById("title").value = task.title;
+  document.getElementById("category").value = task.category;
+  document.getElementById("date").value = task.date.split("T")[0];
+  document.getElementById("notes").value = task.notes || "";
+  document.getElementById("isPriority").checked = task.isPriority || false;
+  document.getElementById("isRecurring").checked = task.isRecurring || false;
+  editingTaskId = task._id;
+  
+  // Update submit button text and add cancel button
+  const submitBtn = document.getElementById("submit-btn");
+  submitBtn.textContent = "✏️ Update Task";
+  submitBtn.style.backgroundColor = "#f59e0b";
+  
+  // Add cancel button if it doesn't exist
+  if (!document.getElementById("cancel-btn")) {
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.id = "cancel-btn";
+    cancelBtn.textContent = "❌ Cancel";
+    cancelBtn.style.backgroundColor = "#6b7280";
+    cancelBtn.style.color = "white";
+    cancelBtn.style.border = "none";
+    cancelBtn.style.borderRadius = "8px";
+    cancelBtn.style.padding = "1rem 1.2rem";
+    cancelBtn.style.fontSize = "1rem";
+    cancelBtn.style.cursor = "pointer";
+    cancelBtn.style.minHeight = "48px";
+    cancelBtn.style.width = "100%";
+    cancelBtn.style.marginTop = "0.5rem";
+    
+    cancelBtn.onclick = cancelEdit;
+    submitBtn.parentNode.insertBefore(cancelBtn, submitBtn.nextSibling);
+  }
+}
+
+async function submitTaskForm(e) {
+  e.preventDefault();
+
+  const taskData = {
+    title: document.getElementById("title").value,
+    category: document.getElementById("category").value,
+    date: document.getElementById("date").value,
+    notes: document.getElementById("notes").value,
+    isPriority: document.getElementById("isPriority").checked,
+    isRecurring: document.getElementById("isRecurring").checked
+  };
+  
+  const method = editingTaskId ? "PUT" : "POST";
+  const url = editingTaskId ? `${API_BASE}/tasks/${editingTaskId}` : `${API_BASE}/tasks/add`;
+
+  await fetch(url, {
+    method: method,
+    headers: { "Content-Type": "application/json" },
+    credentials: 'include',
+    body: JSON.stringify(taskData)
+  });
+
+  // Reset form and restore default state
+  taskForm.reset();
+  editingTaskId = null;
+  
+  // Reset submit button to default state
+  const submitBtn = document.getElementById("submit-btn");
+  submitBtn.textContent = "➕ Add Task";
+  submitBtn.style.backgroundColor = "#3b82f6";
+  
+  // Remove cancel button if it exists
+  const cancelBtn = document.getElementById("cancel-btn");
+  if (cancelBtn) {
+    cancelBtn.remove();
+  }
+  
+  fetchTasks();
+}
+
+async function editTask(id) {
+  const response = await fetch(`${API_BASE}/tasks/${id}`, {
+    credentials: 'include'
+  });
+  const task = await response.json();
+  loadTaskIntoForm(task);
+}
+
+async function markComplete(id) {
+  await fetch(`${API_BASE}/tasks/${id}`, {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  fetchTasks();
+}
+
+async function deleteTask(id) {
+  await fetch(`${API_BASE}/tasks/${id}`, {
+    method: "DELETE",
+    credentials: 'include'
+  });
+  fetchTasks();
+}
+
+// Filter Functions
+function filterTasks() {
+  const startDate = document.getElementById("start-date").value;
+  const endDate = document.getElementById("end-date").value;
+  const categoryFilter = document.getElementById("category-filter").value;
+  const statusFilter = document.getElementById("status-filter").value;
+  const priorityOnly = document.getElementById("priority-filter").checked;
+
+  let filteredTasks = allTasks.filter(task => {
+    // Date range filter
+    if (startDate || endDate) {
+      const taskDate = new Date(task.date);
+      if (startDate && taskDate < new Date(startDate)) return false;
+      if (endDate && taskDate > new Date(endDate)) return false;
+    }
+
+    // Category filter
+    if (categoryFilter && task.category !== categoryFilter) return false;
+
+    // Priority filter
+    if (priorityOnly && !task.isPriority) return false;
+
+    // Status filter
+    if (statusFilter) {
+      const due = new Date(task.date);
+      const today = new Date();
+      const daysLeft = Math.ceil((due - today) / (1000 * 60 * 60 * 24));
+      
+      switch(statusFilter) {
+        case 'upcoming':
+          if (daysLeft < 0) return false;
+          break;
+        case 'overdue':
+          if (daysLeft >= 0) return false;
+          break;
+        case 'soon':
+          if (daysLeft < 0 || daysLeft >= 3) return false;
+          break;
+      }
+    }
+
+    return true;
+  });
+
+  // Sort filtered tasks by date (ascending)
+  filteredTasks.sort((a, b) => new Date(a.date) - new Date(b.date));
+  
+  displayTasks(filteredTasks);
+  updateTaskListHeader(filteredTasks.length);
+}
+
+function clearFilter() {
+  // Clear all filter inputs
+  document.getElementById("start-date").value = "";
+  document.getElementById("end-date").value = "";
+  document.getElementById("category-filter").value = "";
+  document.getElementById("status-filter").value = "";
+  document.getElementById("priority-filter").checked = false;
+  
+  // Display all tasks
+  displayTasks(allTasks);
+  updateTaskListHeader(allTasks.length);
+}
+
+function updateTaskListHeader(taskCount) {
+  const taskList = document.getElementById("taskList");
+  const header = taskList.querySelector("h2");
+  if (header) {
+    header.textContent = `📅 Tasks (${taskCount} found)`;
+  }
+}
+
+// Auto-filter on input change for better user experience
+document.addEventListener('DOMContentLoaded', function() {
+  // Add event listeners for real-time filtering (optional)
+  const filterElements = [
+    'start-date', 'end-date', 'category-filter', 
+    'status-filter', 'priority-filter'
+  ];
+  
+  filterElements.forEach(id => {
+    const element = document.getElementById(id);
+    if (element) {
+      element.addEventListener('change', filterTasks);
+    }
+  });
+});
+
+// Cancel edit function
+function cancelEdit() {
+  // Reset form and clear editing state
+  taskForm.reset();
+  editingTaskId = null;
+  
+  // Reset submit button to default state
+  const submitBtn = document.getElementById("submit-btn");
+  submitBtn.textContent = "➕ Add Task";
+  submitBtn.style.backgroundColor = "#3b82f6";
+  
+  // Remove cancel button
+  const cancelBtn = document.getElementById("cancel-btn");
+  if (cancelBtn) {
+    cancelBtn.remove();
+  }
+}
+
+fetchTasks();
