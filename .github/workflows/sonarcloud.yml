@@ -1,11 +1,9 @@
-name: SonarCloud Scan
+name: SonarCloud Debug + Scan
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,15 +12,69 @@ permissions:
   id-token: write
 
 jobs:
-  sonarcloud:
-    name: SonarCloud Analysis
+  debug-and-scan:
     runs-on: ubuntu-latest
-
+    env:
+      SONAR_PROJECT_KEY: "Msocial123_Acadamic-Deadline-Project"
+      SONAR_ORG: "msocial123"
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # Required for correct analysis & PR decoration
+          fetch-depth: 0
+
+      - name: Show project key & org (verify exact text)
+        run: |
+          echo "---- Sonar values (must match SonarCloud exactly) ----"
+          echo "SONAR_PROJECT_KEY='${SONAR_PROJECT_KEY}'"
+          echo "SONAR_ORG='${SONAR_ORG}'"
+          echo "Check there are no leading/trailing spaces and casing matches SonarCloud UI."
+      
+      - name: Validate SONAR_TOKEN exists in secrets
+        run: |
+          if [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
+            echo "ERROR: SONAR_TOKEN secret is empty or not set!"
+            exit 2
+          else
+            echo "SONAR_TOKEN is set (value hidden)."
+          fi
+
+      - name: Check token by calling SonarCloud authentication validate endpoint
+        id: tokencheck
+        run: |
+          # Use basic auth with token (note the trailing colon)
+          HTTP_STATUS="$(curl -s -o /tmp/tokencheck.out -w '%{http_code}' -u "${{ secrets.SONAR_TOKEN }}:" "https://sonarcloud.io/api/authentication/validate" || true)"
+          echo "HTTP status: ${HTTP_STATUS}"
+          echo "Response body (first 500 chars):"
+          head -c 500 /tmp/tokencheck.out || true
+          echo
+          if [ "${HTTP_STATUS}" != "200" ]; then
+            echo "WARNING: authentication/validate did not return 200. Token may be invalid or not allowed for this org."
+          else
+            echo "Token appears valid (200)."
+          fi
+        continue-on-error: true
+
+      - name: Check project existence via SonarCloud API
+        id: projcheck
+        run: |
+          echo "Calling projects/search for project key: ${SONAR_PROJECT_KEY}"
+          curl -s -u "${{ secrets.SONAR_TOKEN }}:" "https://sonarcloud.io/api/projects/search?projects=${SONAR_PROJECT_KEY}" -o /tmp/projects.json || true
+          echo "projects/search response (first 800 chars):"
+          head -c 800 /tmp/projects.json || true
+          echo
+          # Check if JSON contains any components
+          HAS_COMP=$(jq '.components | length' /tmp/projects.json 2>/dev/null || echo "0")
+          echo "components length: ${HAS_COMP}"
+          if [ "${HAS_COMP}" = "0" ]; then
+            echo "Project not found or not visible to token. Please confirm project key and token's permissions."
+            exit 3
+          else
+            echo "Project found."
+          fi
+        env:
+          SONAR_PROJECT_KEY: ${{ env.SONAR_PROJECT_KEY }}
+        continue-on-error: false
 
       - name: Use Node.js 18
         uses: actions/setup-node@v4
@@ -32,26 +84,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # OPTIONAL — only if you have tests.
-      # If you don't have tests yet, you can remove this step safely.
-      - name: Run tests and generate LCOV coverage
-        run: |
-          # Try normal tests (if no tests exist, skip)
-          npm test || true
-
-          # If you're using nyc for coverage (recommended)
-          # npx nyc --reporter=lcov npm test || true
-
-        shell: bash
-
-      - name: Run SonarCloud Scan
+      - name: Run SonarCloud Scan (only after checks)
         uses: SonarSource/sonarcloud-github-action@v2.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.projectKey=Msocial123_Acadamic-Deadline-Project
-            -Dsonar.organization=msocial123
+            -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ env.SONAR_ORG }}
             -Dsonar.sources=.
             -Dsonar.host.url=https://sonarcloud.io
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
